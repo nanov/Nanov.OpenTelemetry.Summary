@@ -1,5 +1,10 @@
 # Nanov.OpenTelemetry.Summary
 
+[![NuGet](https://img.shields.io/nuget/v/Nanov.OpenTelemetry.Summary.svg)](https://www.nuget.org/packages/Nanov.OpenTelemetry.Summary)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/Nanov.OpenTelemetry.Summary.svg)](https://www.nuget.org/packages/Nanov.OpenTelemetry.Summary)
+[![CI](https://github.com/nanov/Nanov.OpenTelemetry.Summary/actions/workflows/ci.yml/badge.svg)](https://github.com/nanov/Nanov.OpenTelemetry.Summary/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A Summary metric for OpenTelemetry .NET. Computes quantiles (p95, p99, etc.) client-side and reports them as gauges through the standard OTLP pipeline.
 
 ## Why
