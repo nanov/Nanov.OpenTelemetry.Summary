@@ -59,8 +59,18 @@ jobs:
         run: |
           sed -i "s|<Version>.*</Version>|<Version>${{ steps.version.outputs.new_version }}</Version>|" Directory.Build.props
 
+      - name: Check for previous tags
+        id: has_tags
+        run: |
+          if git describe --tags --abbrev=0 2>/dev/null; then
+            echo "EXISTS=true" >> $GITHUB_OUTPUT
+          else
+            echo "EXISTS=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Generate changelog
         id: changelog
+        if: steps.has_tags.outputs.EXISTS == 'true'
         uses: requarks/changelog-action@v1
         with:
           token: ${{ github.token }}
@@ -70,6 +80,13 @@ jobs:
           excludeTypes: build,docs,style,other
           includeRefIssues: true
           useGitmojis: false
+
+      - name: Initial changelog
+        if: steps.has_tags.outputs.EXISTS == 'false'
+        run: |
+          echo -e "# Changelog\n\n## [${{ steps.version.outputs.new_version }}] - $(date +%Y-%m-%d)\n\nInitial release." > CHANGELOG.md
+          echo "changes=Initial release." >> $GITHUB_OUTPUT
+        id: initial_changelog
 
       - name: Commit version and changelog
         if: ${{ !inputs.dry_run }}
@@ -89,7 +106,7 @@ jobs:
           echo "**Bump:** ${{ steps.version.outputs.release_type }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Changelog" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.changelog.outputs.changes }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.changelog.outputs.changes || steps.initial_changelog.outputs.changes }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Create tag and GitHub Release
         if: ${{ !inputs.dry_run }}
@@ -97,5 +114,5 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.new_tag }}
           name: v${{ steps.version.outputs.new_version }}
-          body: ${{ steps.changelog.outputs.changes }}
+          body: ${{ steps.changelog.outputs.changes || steps.initial_changelog.outputs.changes }}
           target_commitish: main
