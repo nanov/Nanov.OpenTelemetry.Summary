@@ -1,0 +1,71 @@
+name: Prerelease
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      - name: Unit Tests
+        run: dotnet test tests/Nanov.OpenTelemetry.Summary.Tests -c Release --no-build
+
+      - name: Integration Tests
+        run: dotnet test tests/Nanov.OpenTelemetry.Summary.IntegrationTests -c Release --no-build
+
+  prerelease:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: version
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          tag_prefix: v
+          dry_run: true
+
+      - name: Calculate prerelease version
+        id: prerelease
+        run: |
+          NEXT="${{ steps.version.outputs.new_version }}"
+          EXISTING=$(git tag -l "v${NEXT}-pre.*" | wc -l | tr -d ' ')
+          PRE_NUM=$((EXISTING + 1))
+          echo "VERSION=${NEXT}-pre.${PRE_NUM}" >> $GITHUB_OUTPUT
+          echo "TAG=v${NEXT}-pre.${PRE_NUM}" >> $GITHUB_OUTPUT
+          echo "Prerelease version: ${NEXT}-pre.${PRE_NUM}"
+
+      - name: Create prerelease tag and GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prerelease.outputs.TAG }}
+          name: ${{ steps.prerelease.outputs.TAG }}
+          prerelease: true
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
