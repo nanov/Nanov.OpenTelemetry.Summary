@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <PackageId>Nanov.OpenTelemetry.Summary</PackageId>
+        <Version>0.1.0</Version>
+        <Description>A Summary metric for OpenTelemetry .NET. Computes quantiles (p95, p99) client-side and reports them as gauges through the standard OTLP pipeline.</Description>
+        <PackageTags>OpenTelemetry;Metrics;Summary;Quantile;Observability;Coralogix;Prometheus</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageProjectUrl>https://github.com/nanov/Nanov.OpenTelemetry.Summary</PackageProjectUrl>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IsPackable>true</IsPackable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Nanov.OpenTelemetry.Summary.Tests" />
+        <InternalsVisibleTo Include="Nanov.OpenTelemetry.Summary.Benchmarks" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="OpenTelemetry" Version="1.11.2"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+</Project>

@@ -1,0 +1,66 @@
+# Build
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+publish/
+artifacts/
+
+# NuGet
+*.nupkg
+*.snupkg
+**/packages/
+*.nuget.props
+*.nuget.targets
+
+# User/IDE settings
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider
+.idea/
+*.sln.iml
+
+# Visual Studio
+.vs/
+*.rsuser
+*.VisualState.xml
+launchSettings.json
+
+# Visual Studio Code
+.vscode/
+
+# Visual Studio for Mac
+*.userprefs
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Windows
+*.lnk
+[Dd]esktop.ini
+
+# Linux
+*~
+.directory
+
+# BenchmarkDotNet
+BenchmarkDotNet.Artifacts/
+
+# Test results
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Claude
+.claude/
