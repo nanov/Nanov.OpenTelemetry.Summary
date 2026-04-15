@@ -48,12 +48,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Determine next version
         id: version
         uses: mathieudutour/github-tag-action@v6.2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.RELEASE_TOKEN }}
           default_bump: patch
           tag_prefix: v
           dry_run: true
@@ -62,13 +63,15 @@ jobs:
         run: |
           sed -i "s|<Version>.*</Version>|<Version>${{ steps.version.outputs.new_version }}</Version>|" Directory.Build.props
 
-      - name: Check for previous tags
+      - name: Check for sufficient tags
         id: has_tags
         run: |
-          if git describe --tags --abbrev=0 2>/dev/null; then
+          TAG_COUNT=$(git tag -l 'v*' | wc -l | tr -d ' ')
+          if [ "$TAG_COUNT" -ge 2 ]; then
             echo "EXISTS=true" >> $GITHUB_OUTPUT
           else
             echo "EXISTS=false" >> $GITHUB_OUTPUT
+            echo "Only $TAG_COUNT tag(s) found, skipping changelog generation"
           fi
 
       - name: Generate changelog
@@ -76,7 +79,7 @@ jobs:
         if: steps.has_tags.outputs.EXISTS == 'true'
         uses: requarks/changelog-action@v1
         with:
-          token: ${{ github.token }}
+          token: ${{ secrets.RELEASE_TOKEN }}
           tag: ${{ steps.version.outputs.new_tag }}
           writeToFile: true
           changelogFilePath: CHANGELOG.md
@@ -86,19 +89,10 @@ jobs:
 
       - name: Initial changelog
         if: steps.has_tags.outputs.EXISTS == 'false'
+        id: initial_changelog
         run: |
           echo -e "# Changelog\n\n## [${{ steps.version.outputs.new_version }}] - $(date +%Y-%m-%d)\n\nInitial release." > CHANGELOG.md
           echo "changes=Initial release." >> $GITHUB_OUTPUT
-        id: initial_changelog
-
-      - name: Commit version and changelog
-        if: ${{ !inputs.dry_run }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Directory.Build.props CHANGELOG.md
-          git commit -m "chore: release v${{ steps.version.outputs.new_version }}"
-          git push origin main
 
       - name: Dry run summary
         if: ${{ inputs.dry_run }}
@@ -111,6 +105,15 @@ jobs:
           echo "#### Changelog" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.changelog.outputs.changes || steps.initial_changelog.outputs.changes }}" >> $GITHUB_STEP_SUMMARY
 
+      - name: Commit version and changelog
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Directory.Build.props CHANGELOG.md
+          git commit -m "chore: release v${{ steps.version.outputs.new_version }}"
+          git push origin main
+
       - name: Create tag and GitHub Release
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
@@ -119,3 +122,4 @@ jobs:
           name: v${{ steps.version.outputs.new_version }}
           body: ${{ steps.changelog.outputs.changes || steps.initial_changelog.outputs.changes }}
           target_commitish: main
+          token: ${{ secrets.RELEASE_TOKEN }}

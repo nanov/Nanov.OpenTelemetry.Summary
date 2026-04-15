@@ -41,12 +41,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Determine next version
         id: version
         uses: mathieudutour/github-tag-action@v6.2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.RELEASE_TOKEN }}
           default_bump: patch
           tag_prefix: v
           dry_run: true
@@ -69,3 +70,4 @@ jobs:
           prerelease: true
           generate_release_notes: true
           target_commitish: ${{ github.sha }}
+          token: ${{ secrets.RELEASE_TOKEN }}
