@@ -59,10 +59,6 @@ jobs:
           tag_prefix: v
           dry_run: true
 
-      - name: Update version in Directory.Build.props
-        run: |
-          sed -i "s|<Version>.*</Version>|<Version>${{ steps.version.outputs.new_version }}</Version>|" Directory.Build.props
-
       - name: Check for sufficient tags
         id: has_tags
         run: |
@@ -71,12 +67,39 @@ jobs:
             echo "EXISTS=true" >> $GITHUB_OUTPUT
           else
             echo "EXISTS=false" >> $GITHUB_OUTPUT
-            echo "Only $TAG_COUNT tag(s) found, skipping changelog generation"
+            echo "Only $TAG_COUNT tag(s) found, will write an initial changelog"
           fi
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "### Dry Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ steps.version.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump:** ${{ steps.version.outputs.release_type }}" >> $GITHUB_STEP_SUMMARY
+
+      # Commit the version bump and create the tag FIRST: requarks/changelog-action requires the tag to
+      # already exist (it errors if the provided tag isn't the latest). Pushing the tag also triggers the
+      # publish workflow. The changelog is generated and committed afterwards as a follow-up doc commit.
+      - name: Configure git
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version, commit and tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          sed -i "s|<Version>.*</Version>|<Version>${{ steps.version.outputs.new_version }}</Version>|" Directory.Build.props
+          git add Directory.Build.props
+          git commit -m "chore: release v${{ steps.version.outputs.new_version }}"
+          git push origin HEAD:main
+          git tag ${{ steps.version.outputs.new_tag }}
+          git push origin ${{ steps.version.outputs.new_tag }}
 
       - name: Generate changelog
         id: changelog
-        if: steps.has_tags.outputs.EXISTS == 'true'
+        if: ${{ !inputs.dry_run && steps.has_tags.outputs.EXISTS == 'true' }}
         uses: requarks/changelog-action@v1
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -88,38 +111,24 @@ jobs:
           useGitmojis: false
 
       - name: Initial changelog
-        if: steps.has_tags.outputs.EXISTS == 'false'
         id: initial_changelog
+        if: ${{ !inputs.dry_run && steps.has_tags.outputs.EXISTS == 'false' }}
         run: |
           echo -e "# Changelog\n\n## [${{ steps.version.outputs.new_version }}] - $(date +%Y-%m-%d)\n\nInitial release." > CHANGELOG.md
           echo "changes=Initial release." >> $GITHUB_OUTPUT
 
-      - name: Dry run summary
-        if: ${{ inputs.dry_run }}
-        run: |
-          echo "### Dry Run Summary" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ steps.version.outputs.new_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Bump:** ${{ steps.version.outputs.release_type }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### Changelog" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.changelog.outputs.changes || steps.initial_changelog.outputs.changes }}" >> $GITHUB_STEP_SUMMARY
-
-      - name: Commit version and changelog
+      - name: Commit changelog
         if: ${{ !inputs.dry_run }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Directory.Build.props CHANGELOG.md
-          git commit -m "chore: release v${{ steps.version.outputs.new_version }}"
-          git push origin main
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog for v${{ steps.version.outputs.new_version }}" || echo "No changelog changes to commit"
+          git push origin HEAD:main || echo "Nothing to push"
 
-      - name: Create tag and GitHub Release
+      - name: Create GitHub Release
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.new_tag }}
           name: v${{ steps.version.outputs.new_version }}
-          body: ${{ steps.changelog.outputs.changes || steps.initial_changelog.outputs.changes }}
-          target_commitish: main
+          body: ${{ steps.changelog.outputs.changes || steps.initial_changelog.outputs.changes || 'Release' }}
           token: ${{ secrets.RELEASE_TOKEN }}
