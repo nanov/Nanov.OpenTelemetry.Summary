@@ -12,6 +12,7 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 	private readonly Dictionary<TagList, SummaryChild> _children = new(TagListComparer.Instance);
 	private readonly SummaryOptions _options;
 	private readonly SummaryChild _untaggedChild;
+	private readonly ObservableGauge<double> _quantileGauge;
 
 	private readonly Dictionary<TagList, (SnapshotResult Snapshot, TagList Tags)> _lastSnapshots = new(TagListComparer.Instance);
 	private SnapshotResult _lastUntaggedSnapshot;
@@ -25,7 +26,7 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 		_untaggedChild = new SummaryChild(options);
 		_buffer = new SwapBuffer<RecordEntry, Summary>(options.BufferCapacity, 0.75, this);
 
-		meter.CreateObservableGauge(name, () => CollectQuantiles(), unit, description);
+		_quantileGauge = meter.CreateObservableGauge(name, () => CollectQuantiles(), unit, description);
 
 		if (options.ReportMax)
 			meter.CreateObservableGauge($"{name}.max", () => CollectMax(), unit);
@@ -37,11 +38,17 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 			meter.CreateObservableCounter($"{name}.sum", () => CollectSum(), unit);
 	}
 
-	public void Record(double value)
-		=> _buffer.Write(new RecordEntry(value, default));
+	public bool IsEnabled => _quantileGauge.Enabled;
 
-	public void Record(double value, in TagList tags)
-		=> _buffer.Write(new RecordEntry(value, tags));
+	public void Record(double value) {
+		if (!_quantileGauge.Enabled) return;
+		_buffer.Write(new RecordEntry(value, default));
+	}
+
+	public void Record(double value, in TagList tags) {
+		if (!_quantileGauge.Enabled) return;
+		_buffer.Write(new RecordEntry(value, tags));
+	}
 
 	public void Record(double value, params ReadOnlySpan<KeyValuePair<string, object?>> tags)
 		=> Record(value, new TagList(tags));

@@ -5,8 +5,24 @@ using System.Diagnostics.Metrics;
 
 public class SummaryTests : IDisposable {
 	private readonly Meter _meter = new("Summary.Tests." + Guid.NewGuid().ToString("N"));
+	private readonly MeterListener _listener;
 
-	public void Dispose() => _meter.Dispose();
+	public SummaryTests() {
+		// A summary only records while a listener has its instruments enabled (Summary.IsEnabled),
+		// mirroring an exporter being subscribed in production. Keep one alive for each test's lifetime.
+		_listener = new MeterListener {
+			InstrumentPublished = (instrument, l) => {
+				if (instrument.Meter == _meter)
+					l.EnableMeasurementEvents(instrument);
+			}
+		};
+		_listener.Start();
+	}
+
+	public void Dispose() {
+		_listener.Dispose();
+		_meter.Dispose();
+	}
 
 	[Fact]
 	public void Record_WithoutTags_Works() {
@@ -123,6 +139,35 @@ public class SummaryTests : IDisposable {
 
 		Assert.NotEmpty(first);
 		Assert.NotEmpty(second);
+	}
+
+	[Fact]
+	public void IsEnabled_ReflectsListenerSubscription_AndGatesRecording() {
+		// Own meter, deliberately NOT covered by the fixture listener.
+		using var meter = new Meter("Summary.IsEnabled." + Guid.NewGuid().ToString("N"));
+		var summary = meter.CreateSummary("test.enabled", "ms", configure: o => o.WithQuantiles(0.50));
+
+		// No listener subscribed yet: disabled, and recording is a no-op.
+		Assert.False(summary.IsEnabled);
+		summary.Record(123);
+
+		var results = new List<double>();
+		using var listener = new MeterListener {
+			InstrumentPublished = (instrument, l) => {
+				if (instrument.Meter == meter)
+					l.EnableMeasurementEvents(instrument);
+			}
+		};
+		listener.SetMeasurementEventCallback<double>((_, value, _, _) => results.Add(value));
+		listener.Start();
+
+		// A listener is now subscribed: enabled, and recording flows through.
+		Assert.True(summary.IsEnabled);
+		summary.Record(50);
+		listener.RecordObservableInstruments();
+
+		Assert.NotEmpty(results);
+		Assert.DoesNotContain(123d, results);
 	}
 
 	[Fact]
