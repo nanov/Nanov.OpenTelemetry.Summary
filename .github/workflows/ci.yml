@@ -18,7 +18,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          types: feat,fix,refactor,perf,test,chore,docs,style,build,ci,revert
+          types: |
+            feat
+            fix
+            refactor
+            perf
+            test
+            chore
+            docs
+            style
+            build
+            ci
+            revert
 
   build-and-test:
     runs-on: ubuntu-latest
