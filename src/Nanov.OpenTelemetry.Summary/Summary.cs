@@ -18,8 +18,7 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 	private SnapshotResult _lastUntaggedSnapshot;
 	private bool _hasUntaggedSnapshot;
 	private readonly List<Measurement<double>> _measurements = [];
-
-	private long _totalCount;
+	private readonly List<Measurement<long>> _countMeasurements = [];
 
 	internal Summary(Meter meter, string name, string? unit, string? description, SummaryOptions options) {
 		_options = options;
@@ -32,7 +31,7 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 			meter.CreateObservableGauge($"{name}.max", () => CollectMax(), unit);
 
 		if (options.ReportCount)
-			meter.CreateObservableCounter($"{name}.count", CollectCount);
+			meter.CreateObservableCounter($"{name}.count", () => CollectCount());
 
 		if (options.ReportSum)
 			meter.CreateObservableCounter($"{name}.sum", () => CollectSum(), unit);
@@ -88,6 +87,8 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 		var untagged = _untaggedChild.SnapshotAndReset(quantiles, qv);
 		_lastUntaggedSnapshot = untagged;
 		_hasUntaggedSnapshot = untagged.Count > 0;
+		_untaggedChild.CumulativeCount += untagged.Count;
+		_untaggedChild.CumulativeSum += untagged.Sum;
 
 		if (_hasUntaggedSnapshot)
 			for (var i = 0; i < quantiles.Length; i++)
@@ -96,6 +97,9 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 		foreach (var (key, child) in _children) {
 			var snapshot = child.SnapshotAndReset(quantiles, qv);
 			if (snapshot.Count == 0) continue;
+
+			child.CumulativeCount += snapshot.Count;
+			child.CumulativeSum += snapshot.Sum;
 
 			ref var snapshotEntry = ref CollectionsMarshal.GetValueRefOrAddDefault(_lastSnapshots, key, out _);
 			snapshotEntry = (snapshot, key);
@@ -122,32 +126,31 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 		return _measurements;
 	}
 
-	private long CollectCount() {
-		var delta = 0L;
-		if (_hasUntaggedSnapshot)
-			delta += _lastUntaggedSnapshot.Count;
+	// Cumulative, per-child tagged totals (a child only ever grows), mirroring sum/max so the counter
+	// can be grouped and filtered by the recorded tags (e.g. http_route, status). Children with no
+	// recorded value are skipped; the untagged child emits a tagless series.
+	private List<Measurement<long>> CollectCount() {
+		_countMeasurements.Clear();
 
-		foreach (var (key, _) in _children) {
-			ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_lastSnapshots, key);
-			if (!Unsafe.IsNullRef(ref entry))
-				delta += entry.Snapshot.Count;
-		}
+		if (_untaggedChild.CumulativeCount > 0)
+			_countMeasurements.Add(new Measurement<long>(_untaggedChild.CumulativeCount));
 
-		_totalCount += delta;
-		return _totalCount;
+		foreach (var (_, child) in _children)
+			if (child.CumulativeCount > 0)
+				_countMeasurements.Add(CreateCountMeasurement(child.CumulativeCount, child.BaseTags));
+
+		return _countMeasurements;
 	}
 
 	private List<Measurement<double>> CollectSum() {
 		_measurements.Clear();
 
-		if (_hasUntaggedSnapshot)
-			_measurements.Add(new Measurement<double>(_lastUntaggedSnapshot.Sum));
+		if (_untaggedChild.CumulativeCount > 0)
+			_measurements.Add(new Measurement<double>(_untaggedChild.CumulativeSum));
 
-		foreach (var (key, child) in _children) {
-			ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_lastSnapshots, key);
-			if (!Unsafe.IsNullRef(ref entry))
-				_measurements.Add(CreateMeasurement(entry.Snapshot.Sum, child.BaseTags));
-		}
+		foreach (var (_, child) in _children)
+			if (child.CumulativeCount > 0)
+				_measurements.Add(CreateMeasurement(child.CumulativeSum, child.BaseTags));
 
 		return _measurements;
 	}
@@ -158,6 +161,15 @@ public sealed class Summary : IBufferConsumer<RecordEntry> {
 		return m;
 	}
 
+	private static Measurement<long> CreateCountMeasurement(long value, KeyValuePair<string, object?>[] tags) {
+		var m = new Measurement<long>(value);
+		MeasurementCountTagsRef(ref m) = tags;
+		return m;
+	}
+
 	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_tags")]
 	private static extern ref KeyValuePair<string, object?>[] MeasurementTagsRef(ref Measurement<double> measurement);
+
+	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_tags")]
+	private static extern ref KeyValuePair<string, object?>[] MeasurementCountTagsRef(ref Measurement<long> measurement);
 }
