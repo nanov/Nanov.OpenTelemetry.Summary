@@ -148,6 +148,67 @@ public class OtelPipelineTests : IDisposable {
 	}
 
 	[Fact]
+	public void TaggedCount_ExportedPerTagWithCorrectTotals() {
+		var summary = _meter.CreateSummary("test.tcount", "ms", configure:
+			o => o.WithQuantiles(0.50).WithCount());
+
+		for (var i = 0; i < 3; i++)
+			summary.Record(1, new TagList { { "route", "/a" } });
+		for (var i = 0; i < 7; i++)
+			summary.Record(1, new TagList { { "route", "/b" } });
+
+		FlushAndCollect();
+
+		var metric = Assert.Single(_exportedMetrics, m => m.Name == "test.tcount.count");
+		var points = GetMetricPoints(metric);
+
+		var a = Assert.Single(points, p => GetTag(p, "route") == "/a");
+		var b = Assert.Single(points, p => GetTag(p, "route") == "/b");
+		Assert.Equal(3, a.LongValue);
+		Assert.Equal(7, b.LongValue);
+	}
+
+	[Fact]
+	public void TaggedSum_ExportedPerTagWithCorrectTotals() {
+		var summary = _meter.CreateSummary("test.tsum", "ms", configure:
+			o => o.WithQuantiles(0.50).WithCount());
+
+		summary.Record(10, new TagList { { "route", "/a" } });
+		summary.Record(20, new TagList { { "route", "/a" } });
+		summary.Record(100, new TagList { { "route", "/b" } });
+
+		FlushAndCollect();
+
+		var metric = Assert.Single(_exportedMetrics, m => m.Name == "test.tsum.sum");
+		var points = GetMetricPoints(metric);
+
+		Assert.Equal(30, Assert.Single(points, p => GetTag(p, "route") == "/a").Value, 3);
+		Assert.Equal(100, Assert.Single(points, p => GetTag(p, "route") == "/b").Value, 3);
+	}
+
+	[Fact]
+	public void TaggedCountAndSum_AreCumulativeAcrossWindows() {
+		var summary = _meter.CreateSummary("test.tcumulative", "ms", configure:
+			o => o.WithQuantiles(0.50).WithCount());
+		var tags = new TagList { { "route", "/a" } };
+
+		summary.Record(10, tags);
+		summary.Record(10, tags);
+		FlushAndCollect();
+		var c1 = Assert.Single(GetMetricPoints(Assert.Single(_exportedMetrics, m => m.Name == "test.tcumulative.count")), p => GetTag(p, "route") == "/a");
+		var s1 = Assert.Single(GetMetricPoints(Assert.Single(_exportedMetrics, m => m.Name == "test.tcumulative.sum")), p => GetTag(p, "route") == "/a");
+		Assert.Equal(2, c1.LongValue);
+		Assert.Equal(20, s1.Value, 3);
+
+		summary.Record(10, tags);
+		FlushAndCollect();
+		var c2 = Assert.Single(GetMetricPoints(Assert.Single(_exportedMetrics, m => m.Name == "test.tcumulative.count")), p => GetTag(p, "route") == "/a");
+		var s2 = Assert.Single(GetMetricPoints(Assert.Single(_exportedMetrics, m => m.Name == "test.tcumulative.sum")), p => GetTag(p, "route") == "/a");
+		Assert.Equal(3, c2.LongValue);
+		Assert.Equal(30, s2.Value, 3);
+	}
+
+	[Fact]
 	public void EmptyWindow_NoQuantilesExported() {
 		_ = _meter.CreateSummary("test.empty", "ms", configure:
 			o => o.WithQuantiles(0.50, 0.99));
