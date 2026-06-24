@@ -112,6 +112,40 @@ builder.Services.AddOpenTelemetry()
         .AddOtlpExporter());
 ```
 
+## ASP.NET Core & HttpClient instrumentation
+
+Companion packages turn the built-in .NET HTTP duration histograms into
+summaries — you get p95/p99 gauges instead of paying for histogram buckets, with
+a drop-in API that mirrors the OpenTelemetry contrib instrumentation. Install
+only the one(s) you need:
+
+```bash
+dotnet add package Nanov.OpenTelemetry.Summary.Instrumentation.AspNetCore
+dotnet add package Nanov.OpenTelemetry.Summary.Instrumentation.Http
+```
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics
+        .AddSummaryAspNetCoreInstrumentation()
+        .AddSummaryHttpClientInstrumentation(o => o.WithQuantiles(0.5, 0.95, 0.99))
+        .AddOtlpExporter());
+```
+
+Both build on a shared `Nanov.OpenTelemetry.Summary.Instrumentation` package that
+exposes the generic primitive `AddSummaryBridge(meterName, instrumentName, ...)`
+for bridging any other histogram into a summary.
+
+They attach a `MeterListener` to `http.server.request.duration` /
+`http.client.request.duration` and forwards every measurement into a `Summary`
+emitted under the **same name** (distinguished by the `quantile` tag). Because
+the source meter is never registered with the `MeterProvider`, the original
+histogram is observed but never aggregated into buckets or exported — only the
+summary gauges are.
+
+Don't call `AddAspNetCoreInstrumentation()` / `AddHttpClientInstrumentation()`
+alongside these unless you deliberately want both the histogram and the summary.
+
 ## Grafana / Coralogix dashboards
 
 ### Latency overview (p95 & p99)

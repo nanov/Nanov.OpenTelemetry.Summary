@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Nanov.OpenTelemetry.Summary.Instrumentation.AspNetCore</PackageId>
+    <Description>Turnkey instrumentation that bridges the built-in ASP.NET Core http.server.request.duration histogram into a Nanov.OpenTelemetry.Summary quantile gauge, without exporting the original histogram.</Description>
+    <PackageTags>OpenTelemetry;Metrics;Summary;Quantile;Instrumentation;AspNetCore;Observability</PackageTags>
+    <PackageProjectUrl>https://github.com/nanov/Nanov.OpenTelemetry.Summary</PackageProjectUrl>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nanov.OpenTelemetry.Summary.Instrumentation\Nanov.OpenTelemetry.Summary.Instrumentation.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Nanov.OpenTelemetry.Summary;
+using Nanov.OpenTelemetry.Summary.Instrumentation.AspNetCore;
+using Nanov.OpenTelemetry.Summary.Instrumentation.Http;
 using OpenTelemetry.Metrics;
 
 var meter = new Meter("Summary.Example");
@@ -16,6 +18,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenTelemetry()
 	.WithMetrics(metrics => metrics
 		.AddMeter("Summary.Example")
+		// Bridge the built-in ASP.NET Core / HttpClient duration histograms into summaries.
+		// The original histograms are observed but never exported — only the quantile gauges.
+		.AddSummaryAspNetCoreInstrumentation(o => o.WithQuantiles(0.50, 0.95, 0.99))
+		.AddSummaryHttpClientInstrumentation(o => o.WithQuantiles(0.50, 0.95, 0.99))
 		.AddConsoleExporter((_, reader) =>
 			reader.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds = 10_000));
 
