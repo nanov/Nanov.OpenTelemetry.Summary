@@ -11,6 +11,8 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\Nanov.OpenTelemetry.Summary\Nanov.OpenTelemetry.Summary.csproj"/>
+        <ProjectReference Include="..\..\src\Nanov.OpenTelemetry.Summary.Instrumentation.AspNetCore\Nanov.OpenTelemetry.Summary.Instrumentation.AspNetCore.csproj"/>
+        <ProjectReference Include="..\..\src\Nanov.OpenTelemetry.Summary.Instrumentation.Http\Nanov.OpenTelemetry.Summary.Instrumentation.Http.csproj"/>
     </ItemGroup>
 
 </Project>

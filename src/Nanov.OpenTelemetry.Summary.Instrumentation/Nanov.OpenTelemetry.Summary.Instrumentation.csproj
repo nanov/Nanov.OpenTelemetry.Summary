@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Nanov.OpenTelemetry.Summary.Instrumentation</PackageId>
+    <Description>Shared bridge that turns any source histogram instrument into a Nanov.OpenTelemetry.Summary quantile gauge, without exporting the original histogram. Base package for the ASP.NET Core and HttpClient summary instrumentation.</Description>
+    <PackageTags>OpenTelemetry;Metrics;Summary;Quantile;Instrumentation;Observability</PackageTags>
+    <PackageProjectUrl>https://github.com/nanov/Nanov.OpenTelemetry.Summary</PackageProjectUrl>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry" Version="1.11.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nanov.OpenTelemetry.Summary\Nanov.OpenTelemetry.Summary.csproj" />
+  </ItemGroup>
+
+</Project>
