@@ -6,6 +6,7 @@ public sealed class SummaryOptions {
 	public double[] Quantiles { get; private set; } = [0.95, 0.99];
 	internal string[] QuantileLabels { get; private set; } = ["0.95", "0.99"];
 	public bool ReportMax { get; private set; }
+	public bool ReportMin { get; private set; }
 	public bool ReportCount { get; private set; } = true;
 	public bool ReportSum { get; private set; } = true;
 	public int BufferCapacity { get; private set; } = 4_096;
@@ -43,6 +44,12 @@ public sealed class SummaryOptions {
 
 	public SummaryOptions WithMax(bool enabled = true) {
 		ReportMax = enabled;
+		return this;
+	}
+
+	/// <summary>Report <c>{name}.min</c>, the smallest value recorded in the window.</summary>
+	public SummaryOptions WithMin(bool enabled = true) {
+		ReportMin = enabled;
 		return this;
 	}
 

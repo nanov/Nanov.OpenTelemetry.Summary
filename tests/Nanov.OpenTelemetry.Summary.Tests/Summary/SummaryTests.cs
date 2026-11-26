@@ -181,12 +181,14 @@ public class SummaryTests : IDisposable {
 		var options = new SummaryOptions()
 			.WithQuantiles(0.5, 0.9)
 			.WithMax()
+			.WithMin()
 			.WithCount()
 			.WithBufferCapacity(1024)
 			.WithReservoir(sampleSize: 512, alpha: 0.01);
 
 		Assert.Equal([0.5, 0.9], options.Quantiles);
 		Assert.True(options.ReportMax);
+		Assert.True(options.ReportMin);
 		Assert.True(options.ReportCount);
 		Assert.True(options.ReportSum);
 		Assert.Equal(1024, options.BufferCapacity);
@@ -210,6 +212,28 @@ public class SummaryTests : IDisposable {
 		Assert.Equal(7, quantiles[0].value);
 		Assert.Equal("/a", quantiles[0].tags["route"]);
 		Assert.Equal(3, Assert.Single(all["test.bind.count"]).value);
+	}
+
+	[Fact]
+	public void WithMin_ReportsTheWindowsMinimum_PerTagSet() {
+		var summary = _meter.CreateSummary("test.min", "ms", configure: o => o.WithQuantiles(0.5).WithMin());
+
+		summary.Record(10);
+		summary.Record(3);
+		summary.Record(7, new KeyValuePair<string, object?>("route", "/a"));
+
+		var mins = CollectAllMeasurements()["test.min.min"];
+		Assert.Equal(2, mins.Count);
+		Assert.Contains(mins, m => m.value == 3 && m.tags.Count == 0);
+		Assert.Contains(mins, m => m.value == 7 && m.tags["route"] == "/a");
+	}
+
+	[Fact]
+	public void Min_IsOff_ByDefault() {
+		var summary = _meter.CreateSummary("test.nomin", "ms");
+		summary.Record(1);
+
+		Assert.False(CollectAllMeasurements().ContainsKey("test.nomin.min"));
 	}
 
 	[Fact]

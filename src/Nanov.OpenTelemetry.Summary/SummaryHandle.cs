@@ -8,9 +8,11 @@ using System.Diagnostics;
 /// same series.
 /// </summary>
 public readonly struct SummaryHandle {
+	private readonly Summary _summary;
 	private readonly SummaryChild _child;
 
-	internal SummaryHandle(SummaryChild child) {
+	internal SummaryHandle(Summary summary, SummaryChild child) {
+		_summary = summary;
 		_child = child;
 	}
 
@@ -22,21 +24,5 @@ public readonly struct SummaryHandle {
 		=> _child.Record(value);
 
 	/// <summary>Times until the returned timer is disposed, then records the elapsed milliseconds.</summary>
-	public SummaryHandleTimer Time() => new(_child);
-}
-
-/// <summary>From <see cref="SummaryHandle.Time"/>. Records the elapsed milliseconds when disposed.</summary>
-public readonly struct SummaryHandleTimer : IDisposable {
-	private readonly SummaryChild _child;
-	private readonly long _startTimestamp;
-
-	internal SummaryHandleTimer(SummaryChild child) {
-		_child = child;
-		_startTimestamp = Stopwatch.GetTimestamp();
-	}
-
-	public double ElapsedMilliseconds => Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
-
-	public void Dispose()
-		=> _child.Record(ElapsedMilliseconds);
+	public SummaryTimer Time() => new(_summary, _child);
 }

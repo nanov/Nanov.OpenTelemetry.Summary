@@ -82,11 +82,12 @@ By default, each summary emits:
 | `{name}.count` | Counter | Total number of observations (monotonic) |
 | `{name}.sum` | Counter | Sum of all observed values |
 
-Max is available as an opt-in:
+Max and min are available as opt-ins:
 
 | Metric | Type | Description |
 |---|---|---|
 | `{name}.max` | Gauge | Largest value recorded in the window |
+| `{name}.min` | Gauge | Smallest value recorded in the window |
 
 And one more appears only when it is non-zero:
 
@@ -94,7 +95,7 @@ And one more appears only when it is non-zero:
 |---|---|---|
 | `{name}.dropped` | Counter | Values recorded but left out of the quantiles' sample (monotonic) |
 
-Quantiles and max cover the values recorded since the previous export. A tag set with no values in a window reports no quantile or max point. Count and sum keep growing. Count, sum and max include dropped values; only the quantiles miss them. If `.dropped` grows, raise `WithBufferCapacity`.
+Quantiles, max and min cover the values recorded since the previous export. A tag set with no values in a window reports no quantile, max or min point. Count and sum keep growing. Count, sum, max and min include dropped values; only the quantiles miss them. If `.dropped` grows, raise `WithBufferCapacity`.
 
 Quantile labels are written with two decimals in the invariant culture (`0.95`, `0.50`), except where two decimals would round: `0.999` stays `0.999` instead of `1.00`. NaN values are ignored.
 
@@ -106,6 +107,7 @@ var summary = meter.CreateSummary("http.request.duration", "ms",
     configure: options => options
         .WithQuantiles(0.50, 0.95, 0.99)   // default: 0.95, 0.99
         .WithMax()                          // opt-in
+        .WithMin()                          // opt-in
         .WithoutSum()                       // disable sum counter
         .WithoutCount()                     // disable count counter
         .WithBufferCapacity(8192)           // default: 4096, per tag set

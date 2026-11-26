@@ -20,8 +20,8 @@ using Reservoir;
 /// that is still empty, so no reserved value is skipped; writers never wait. While the drain takes a bucket's
 /// slots the bucket is closed: a writer that still sees it as active gets an index past the end and takes the
 /// drop path, so it cannot overwrite a slot the drain has not taken yet. A value that finds both buckets full
-/// misses the sample but is still counted: the drop path adds it to its stripe's dropped count, sum and max, so
-/// <c>.count</c>, <c>.sum</c> and <c>.max</c> stay exact and <c>.dropped</c> says how many values the quantiles
+/// misses the sample but is still counted: the drop path adds it to its stripe's dropped count, sum, max and min, so
+/// <c>.count</c>, <c>.sum</c>, <c>.max</c> and <c>.min</c> stay exact and <c>.dropped</c> says how many values the quantiles
 /// did not see.
 /// </para>
 /// <para>
@@ -64,14 +64,16 @@ internal sealed class SummaryChild : IThreadPoolWorkItem {
 	/// <summary>The recorded tags plus <c>quantile</c>, one set per quantile, built once.</summary>
 	public readonly KeyValuePair<string, object?>[][] QuantileTagArrays;
 
-	public SummaryChild(SummaryOptions options, Instrument gate, ReadOnlySpan<KeyValuePair<string, object?>> tags)
-		: this(options, gate, tags, StripeCount) { }
-
-	internal SummaryChild(SummaryOptions options, Instrument gate, ReadOnlySpan<KeyValuePair<string, object?>> tags, int stripes) {
+	// stripes: a power of two; 0 means one per core. Tests pin it.
+	public SummaryChild(SummaryOptions options, Instrument gate, ReadOnlySpan<KeyValuePair<string, object?>> tags, int stripes = 0) {
+		if (stripes == 0)
+			stripes = StripeCount;
 		_gate = gate;
 		_stripes = new Stripe[stripes];
-		for (var i = 0; i < _stripes.Length; i++)
+		for (var i = 0; i < _stripes.Length; i++) {
 			_stripes[i].DroppedMax = double.NegativeInfinity;
+			_stripes[i].DroppedMin = double.PositiveInfinity;
+		}
 
 		_perStripe = Math.Max((options.BufferCapacity + stripes - 1) / stripes, 64);
 		_highWater = Math.Max(_perStripe * 3 / 4, 1);
@@ -138,7 +140,9 @@ internal sealed class SummaryChild : IThreadPoolWorkItem {
 		// Most dropped values are not a new maximum: a read settles those.
 		if (value > Volatile.Read(ref stripe.DroppedMax))
 			MaxDouble(ref stripe.DroppedMax, value);
-		// Last, so a drain that sees the count also sees the value in the sum and max.
+		if (value < Volatile.Read(ref stripe.DroppedMin))
+			MinDouble(ref stripe.DroppedMin, value);
+		// Last, so a drain that sees the count also sees the value in the sum, max and min.
 		Interlocked.Increment(ref stripe.DroppedCount);
 	}
 
@@ -195,7 +199,7 @@ internal sealed class SummaryChild : IThreadPoolWorkItem {
 		var sampled = snapshot.Count > 0;
 
 		long dropped = 0;
-		double droppedSum = 0, droppedMax = double.NegativeInfinity;
+		double droppedSum = 0, droppedMax = double.NegativeInfinity, droppedMin = double.PositiveInfinity;
 		for (var s = 0; s < _stripes.Length; s++) {
 			ref var stripe = ref _stripes[s];
 			var count = Interlocked.Exchange(ref stripe.DroppedCount, 0);
@@ -204,12 +208,13 @@ internal sealed class SummaryChild : IThreadPoolWorkItem {
 			dropped += count;
 			droppedSum += Interlocked.Exchange(ref stripe.DroppedSum, 0);
 			droppedMax = Math.Max(droppedMax, Interlocked.Exchange(ref stripe.DroppedMax, double.NegativeInfinity));
+			droppedMin = Math.Min(droppedMin, Interlocked.Exchange(ref stripe.DroppedMin, double.PositiveInfinity));
 		}
 
 		if (dropped > 0) {
 			snapshot = new SnapshotResult(
 				max: sampled ? Math.Max(snapshot.Max, droppedMax) : droppedMax,
-				min: snapshot.Min,
+				min: sampled ? Math.Min(snapshot.Min, droppedMin) : droppedMin,
 				sum: snapshot.Sum + droppedSum,
 				count: snapshot.Count + dropped);
 			TotalDropped += dropped;
@@ -239,6 +244,16 @@ internal sealed class SummaryChild : IThreadPoolWorkItem {
 		var current = Volatile.Read(ref location);
 		while (true) {
 			var seen = Interlocked.CompareExchange(ref location, current + value, current);
+			if (seen.Equals(current))
+				return;
+			current = seen;
+		}
+	}
+
+	private static void MinDouble(ref double location, double value) {
+		var current = Volatile.Read(ref location);
+		while (value < current) {
+			var seen = Interlocked.CompareExchange(ref location, value, current);
 			if (seen.Equals(current))
 				return;
 			current = seen;
@@ -280,5 +295,6 @@ internal sealed class SummaryChild : IThreadPoolWorkItem {
 		[FieldOffset(128)] public long DroppedCount;
 		[FieldOffset(136)] public double DroppedSum;
 		[FieldOffset(144)] public double DroppedMax;
+		[FieldOffset(152)] public double DroppedMin;
 	}
 }

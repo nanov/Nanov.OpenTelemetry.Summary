@@ -61,14 +61,17 @@ public class SummaryChildTests : IDisposable {
 		lock (child.SyncRoot) {
 			for (var v = 1; v <= 200; v++)
 				child.Record(v);
+			// Past both buckets, so only the drop path sees it.
+			child.Record(-5);
 
 			Assert.True(child.Collect(Quantiles));
 		}
 
-		Assert.Equal(200, child.TotalCount);
-		Assert.Equal(20_100.0, child.TotalSum);
+		Assert.Equal(201, child.TotalCount);
+		Assert.Equal(20_095.0, child.TotalSum);
 		Assert.Equal(200.0, child.Last.Max);
-		Assert.True(child.TotalDropped >= 200 - 128, child.TotalDropped.ToString());
+		Assert.Equal(-5.0, child.Last.Min);
+		Assert.True(child.TotalDropped >= 201 - 128, child.TotalDropped.ToString());
 		Assert.True(child.QuantileValues[1] < 200.0, "the quantiles only saw the sample");
 	}
 

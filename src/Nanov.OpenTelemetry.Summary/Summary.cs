@@ -18,35 +18,32 @@ public sealed class Summary {
 	private readonly ConcurrentDictionary<KeyValuePair<string, object?>[], SummaryChild>.AlternateLookup<ReadOnlySpan<KeyValuePair<string, object?>>> _lookup;
 	private readonly Lock _insertLock = new();
 
-	// Copy-on-write list of every child, untagged first, so the export callbacks iterate without allocating.
-	private SummaryChild[] _all;
-
-	private readonly List<Measurement<double>> _quantileMeasurements = [];
-	private readonly List<Measurement<double>> _maxMeasurements = [];
-	private readonly List<Measurement<double>> _sumMeasurements = [];
-	private readonly List<Measurement<long>> _countMeasurements = [];
-	private readonly List<Measurement<long>> _droppedMeasurements = [];
+	// Shared by the callbacks: they run one at a time, and each list is consumed before the next callback.
+	private readonly List<Measurement<double>> _doubles = [];
+	private readonly List<Measurement<long>> _longs = [];
 
 	internal Summary(Meter meter, string name, string? unit, string? description, SummaryOptions options) {
 		_options = options;
 		_lookup = _children.GetAlternateLookup<ReadOnlySpan<KeyValuePair<string, object?>>>();
 
-		// Registration order is callback order: the quantile gauge closes the window first, so max, count, sum
-		// and dropped report from the same one.
+		// Registration order is callback order: the quantile gauge closes the window first, so max, min, count,
+		// sum and dropped report from the same one.
 		_quantileGauge = meter.CreateObservableGauge(name, CollectQuantiles, unit, description);
 		_untaggedChild = new SummaryChild(options, _quantileGauge, default);
-		_all = [_untaggedChild];
 
 		if (options.ReportMax)
-			meter.CreateObservableGauge(name + ".max", CollectMax, unit);
+			meter.CreateObservableGauge(name + ".max", () => CollectTotals(_doubles, static c => c.Last.Count > 0, static c => c.Last.Max), unit);
+
+		if (options.ReportMin)
+			meter.CreateObservableGauge(name + ".min", () => CollectTotals(_doubles, static c => c.Last.Count > 0, static c => c.Last.Min), unit);
 
 		if (options.ReportCount)
-			meter.CreateObservableCounter(name + ".count", CollectCount);
+			meter.CreateObservableCounter(name + ".count", () => CollectTotals(_longs, static c => c.TotalCount > 0, static c => c.TotalCount));
 
 		if (options.ReportSum)
-			meter.CreateObservableCounter(name + ".sum", CollectSum, unit);
+			meter.CreateObservableCounter(name + ".sum", () => CollectTotals(_doubles, static c => c.TotalCount > 0, static c => c.TotalSum), unit);
 
-		meter.CreateObservableCounter(name + ".dropped", CollectDropped, description: "Values recorded but left out of the quantiles' sample");
+		meter.CreateObservableCounter(name + ".dropped", () => CollectTotals(_longs, static c => c.TotalDropped > 0, static c => c.TotalDropped), description: "Values recorded but left out of the quantiles' sample");
 	}
 
 	public bool IsEnabled => _quantileGauge.Enabled;
@@ -68,11 +65,11 @@ public sealed class Summary {
 	/// A handle for one tag set, which records without looking the tags up: bind once, record many times.
 	/// </summary>
 	public SummaryHandle Bind(in TagList tags)
-		=> new(GetOrCreateChild(in tags));
+		=> new(this, GetOrCreateChild(in tags));
 
 	/// <inheritdoc cref="Bind(in TagList)"/>
 	public SummaryHandle Bind(params ReadOnlySpan<KeyValuePair<string, object?>> tags)
-		=> new(GetOrCreateChild(tags));
+		=> new(this, GetOrCreateChild(tags));
 
 	public SummaryTimer Time() => new(this, _untaggedChild);
 
@@ -133,82 +130,47 @@ public sealed class Summary {
 
 			var child = new SummaryChild(_options, _quantileGauge, tags);
 			_children.TryAdd(child.BaseTags, child);
-
-			var all = _all;
-			var next = new SummaryChild[all.Length + 1];
-			all.CopyTo(next, 0);
-			next[all.Length] = child;
-			Volatile.Write(ref _all, next);
 			return child;
 		}
 	}
 
 	private List<Measurement<double>> CollectQuantiles() {
 		var quantiles = _options.Quantiles;
-		var measurements = _quantileMeasurements;
+		var measurements = _doubles;
 		measurements.Clear();
 
-		foreach (var child in Volatile.Read(ref _all)) {
+		Add(_untaggedChild);
+		foreach (var (_, child) in _children)
+			Add(child);
+		return measurements;
+
+		void Add(SummaryChild child) {
 			lock (child.SyncRoot) {
 				if (!child.Collect(quantiles))
-					continue;
+					return;
 				for (var i = 0; i < quantiles.Length; i++)
 					measurements.Add(CreateMeasurement(child.QuantileValues[i], child.QuantileTagArrays[i]));
 			}
 		}
-
-		return measurements;
 	}
 
-	private List<Measurement<double>> CollectMax() {
-		var measurements = _maxMeasurements;
+	// .max, .min, .count, .sum and .dropped: one point per child that has one, with the child's own tags, so the
+	// counters can be grouped and filtered by the recorded tags (e.g. http_route, status). Count, sum and dropped
+	// are cumulative; max and min cover the window the quantile gauge just closed.
+	private List<Measurement<T>> CollectTotals<T>(List<Measurement<T>> measurements, Func<SummaryChild, bool> include, Func<SummaryChild, T> value)
+		where T : struct {
 		measurements.Clear();
 
-		foreach (var child in Volatile.Read(ref _all))
-			lock (child.SyncRoot)
-				if (child.Last.Count > 0)
-					measurements.Add(CreateMeasurement(child.Last.Max, child.BaseTags));
-
+		Add(_untaggedChild);
+		foreach (var (_, child) in _children)
+			Add(child);
 		return measurements;
-	}
 
-	// Cumulative, per-child tagged totals (a child only ever grows), so the counters can be grouped and filtered
-	// by the recorded tags (e.g. http_route, status). Children with no recorded value are skipped; the untagged
-	// child emits a tagless series.
-	private List<Measurement<long>> CollectCount() {
-		var measurements = _countMeasurements;
-		measurements.Clear();
-
-		foreach (var child in Volatile.Read(ref _all))
+		void Add(SummaryChild child) {
 			lock (child.SyncRoot)
-				if (child.TotalCount > 0)
-					measurements.Add(CreateMeasurement(child.TotalCount, child.BaseTags));
-
-		return measurements;
-	}
-
-	private List<Measurement<double>> CollectSum() {
-		var measurements = _sumMeasurements;
-		measurements.Clear();
-
-		foreach (var child in Volatile.Read(ref _all))
-			lock (child.SyncRoot)
-				if (child.TotalCount > 0)
-					measurements.Add(CreateMeasurement(child.TotalSum, child.BaseTags));
-
-		return measurements;
-	}
-
-	private List<Measurement<long>> CollectDropped() {
-		var measurements = _droppedMeasurements;
-		measurements.Clear();
-
-		foreach (var child in Volatile.Read(ref _all))
-			lock (child.SyncRoot)
-				if (child.TotalDropped > 0)
-					measurements.Add(CreateMeasurement(child.TotalDropped, child.BaseTags));
-
-		return measurements;
+				if (include(child))
+					measurements.Add(CreateMeasurement(value(child), child.BaseTags));
+		}
 	}
 
 	// The public constructors copy the tags into a new array on every export; the children's arrays are built
