@@ -194,6 +194,45 @@ public class SummaryTests : IDisposable {
 		Assert.Equal(0.01, options.Alpha);
 	}
 
+	[Fact]
+	public void Bind_RecordsIntoTheSameSeriesAsRecord() {
+		var summary = _meter.CreateSummary("test.bind", "ms", configure: o => o.WithQuantiles(1.0));
+
+		var handle = summary.Bind(new TagList { { "route", "/a" }, { "method", "GET" } });
+		handle.Record(5);
+		// Same set, other order: same series.
+		summary.Record(7, new KeyValuePair<string, object?>("method", "GET"), new KeyValuePair<string, object?>("route", "/a"));
+		using (handle.Time()) { }
+
+		var all = CollectAllMeasurements();
+		var quantiles = all["test.bind"];
+		Assert.Single(quantiles);
+		Assert.Equal(7, quantiles[0].value);
+		Assert.Equal("/a", quantiles[0].tags["route"]);
+		Assert.Equal(3, Assert.Single(all["test.bind.count"]).value);
+	}
+
+	[Fact]
+	public void NaN_IsIgnored() {
+		var summary = _meter.CreateSummary("test.nan", "ms", configure: o => o.WithQuantiles(1.0));
+
+		summary.Record(double.NaN);
+		summary.Record(3);
+
+		var all = CollectAllMeasurements();
+		Assert.Equal(3, Assert.Single(all["test.nan"]).value);
+		Assert.Equal(1, Assert.Single(all["test.nan.count"]).value);
+	}
+
+	[Fact]
+	public void Dropped_IsReportedOnlyOnceThereAreAny() {
+		var summary = _meter.CreateSummary("test.dropped", "ms", configure: o => o.WithQuantiles(1.0));
+		summary.Record(1);
+
+		var all = CollectAllMeasurements();
+		Assert.False(all.ContainsKey("test.dropped.dropped"));
+	}
+
 	private Dictionary<string, List<(double value, Dictionary<string, string> tags)>> CollectAllMeasurements() {
 		var results = new Dictionary<string, List<(double, Dictionary<string, string>)>>();
 

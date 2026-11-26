@@ -5,8 +5,8 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.11.2"/>
-        <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.11.2"/>
+        <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="$(OpenTelemetryVersion)"/>
+        <PackageReference Include="OpenTelemetry.Exporter.Console" Version="$(OpenTelemetryVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
