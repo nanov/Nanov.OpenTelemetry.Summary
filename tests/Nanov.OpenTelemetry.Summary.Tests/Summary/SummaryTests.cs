@@ -181,17 +181,80 @@ public class SummaryTests : IDisposable {
 		var options = new SummaryOptions()
 			.WithQuantiles(0.5, 0.9)
 			.WithMax()
+			.WithMin()
 			.WithCount()
 			.WithBufferCapacity(1024)
 			.WithReservoir(sampleSize: 512, alpha: 0.01);
 
 		Assert.Equal([0.5, 0.9], options.Quantiles);
 		Assert.True(options.ReportMax);
+		Assert.True(options.ReportMin);
 		Assert.True(options.ReportCount);
 		Assert.True(options.ReportSum);
 		Assert.Equal(1024, options.BufferCapacity);
 		Assert.Equal(512, options.SampleSize);
 		Assert.Equal(0.01, options.Alpha);
+	}
+
+	[Fact]
+	public void Bind_RecordsIntoTheSameSeriesAsRecord() {
+		var summary = _meter.CreateSummary("test.bind", "ms", configure: o => o.WithQuantiles(1.0));
+
+		var handle = summary.Bind(new TagList { { "route", "/a" }, { "method", "GET" } });
+		handle.Record(5);
+		// Same set, other order: same series.
+		summary.Record(7, new KeyValuePair<string, object?>("method", "GET"), new KeyValuePair<string, object?>("route", "/a"));
+		using (handle.Time()) { }
+
+		var all = CollectAllMeasurements();
+		var quantiles = all["test.bind"];
+		Assert.Single(quantiles);
+		Assert.Equal(7, quantiles[0].value);
+		Assert.Equal("/a", quantiles[0].tags["route"]);
+		Assert.Equal(3, Assert.Single(all["test.bind.count"]).value);
+	}
+
+	[Fact]
+	public void WithMin_ReportsTheWindowsMinimum_PerTagSet() {
+		var summary = _meter.CreateSummary("test.min", "ms", configure: o => o.WithQuantiles(0.5).WithMin());
+
+		summary.Record(10);
+		summary.Record(3);
+		summary.Record(7, new KeyValuePair<string, object?>("route", "/a"));
+
+		var mins = CollectAllMeasurements()["test.min.min"];
+		Assert.Equal(2, mins.Count);
+		Assert.Contains(mins, m => m.value == 3 && m.tags.Count == 0);
+		Assert.Contains(mins, m => m.value == 7 && m.tags["route"] == "/a");
+	}
+
+	[Fact]
+	public void Min_IsOff_ByDefault() {
+		var summary = _meter.CreateSummary("test.nomin", "ms");
+		summary.Record(1);
+
+		Assert.False(CollectAllMeasurements().ContainsKey("test.nomin.min"));
+	}
+
+	[Fact]
+	public void NaN_IsIgnored() {
+		var summary = _meter.CreateSummary("test.nan", "ms", configure: o => o.WithQuantiles(1.0));
+
+		summary.Record(double.NaN);
+		summary.Record(3);
+
+		var all = CollectAllMeasurements();
+		Assert.Equal(3, Assert.Single(all["test.nan"]).value);
+		Assert.Equal(1, Assert.Single(all["test.nan.count"]).value);
+	}
+
+	[Fact]
+	public void Dropped_IsReportedOnlyOnceThereAreAny() {
+		var summary = _meter.CreateSummary("test.dropped", "ms", configure: o => o.WithQuantiles(1.0));
+		summary.Record(1);
+
+		var all = CollectAllMeasurements();
+		Assert.False(all.ContainsKey("test.dropped.dropped"));
 	}
 
 	private Dictionary<string, List<(double value, Dictionary<string, string> tags)>> CollectAllMeasurements() {

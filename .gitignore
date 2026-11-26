@@ -64,3 +64,6 @@ coverage/
 
 # Claude
 .claude/
+
+# Serena (local code-assistant config)
+.serena/

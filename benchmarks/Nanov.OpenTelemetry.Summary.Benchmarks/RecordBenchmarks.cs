@@ -6,25 +6,26 @@ using App.Metrics;
 using App.Metrics.ReservoirSampling.ExponentialDecay;
 using App.Metrics.Timer;
 using BenchmarkDotNet.Attributes;
-using BenchmarkDotNet.Jobs;
 using Reservoir;
 using PromMetrics = Prometheus.Metrics;
 using OtelSummary = Nanov.OpenTelemetry.Summary.Summary;
 
 [MemoryDiagnoser]
-[SimpleJob(RuntimeMoniker.Net90)]
 public class RecordBenchmarks {
 	private OtelSummary _otelSummary = null!;
+	private SummaryHandle _otelHandle;
 	private IMetrics _appMetrics = null!;
 	private TimerOptions _appMetricsTimer = null!;
 	private Prometheus.Summary _promSummary = null!;
 	private Prometheus.Summary.Child _promSummaryChild = null!;
 	private Meter _meter = null!;
+	private MeterListener _listener = null!;
 	private TagList _tags;
 
 	[GlobalSetup]
 	public void Setup() {
 		_meter = new Meter("Benchmark");
+		_listener = Listen(_meter);
 		_otelSummary = _meter.CreateSummary("bench.duration", "ms", configure:
 			o => o.WithQuantiles(0.50, 0.95, 0.99).WithMax().WithCount());
 
@@ -56,16 +57,34 @@ public class RecordBenchmarks {
 			{ "method", "GET" },
 			{ "status", "200" }
 		};
+		_otelHandle = _otelSummary.Bind(_tags);
 	}
 
 	[GlobalCleanup]
-	public void Cleanup() => _meter.Dispose();
+	public void Cleanup() {
+		_listener.Dispose();
+		_meter.Dispose();
+	}
 
 	[Benchmark(Baseline = true)]
 	public void Summary_Record_NoTags() => _otelSummary.Record(42.5);
 
 	[Benchmark]
 	public void Summary_Record_WithTags() => _otelSummary.Record(42.5, _tags);
+
+	[Benchmark]
+	public void Summary_BoundHandle_Record() => _otelHandle.Record(42.5);
+
+	internal static MeterListener Listen(Meter meter) {
+		var listener = new MeterListener {
+			InstrumentPublished = (instrument, l) => {
+				if (instrument.Meter == meter)
+					l.EnableMeasurementEvents(instrument);
+			}
+		};
+		listener.Start();
+		return listener;
+	}
 
 	[Benchmark]
 	public void AppMetrics_Record_NoTags() => _appMetrics.Measure.Timer.Time(_appMetricsTimer, 42);
@@ -89,7 +108,6 @@ public class RecordBenchmarks {
 }
 
 [MemoryDiagnoser]
-[SimpleJob(RuntimeMoniker.Net90)]
 public class SnapshotBenchmarks {
 	private OtelSummary _otelSummary = null!;
 	private DefaultForwardDecayingReservoir _appMetricsReservoir = null!;
@@ -131,8 +149,8 @@ public class SnapshotBenchmarks {
 }
 
 [MemoryDiagnoser]
-[SimpleJob(RuntimeMoniker.Net90)]
 public class ConcurrentRecordBenchmarks {
+	private MeterListener _listener = null!;
 	private OtelSummary _otelSummary = null!;
 	private IMetrics _appMetrics = null!;
 	private TimerOptions _appMetricsTimer = null!;
@@ -145,6 +163,7 @@ public class ConcurrentRecordBenchmarks {
 	[GlobalSetup]
 	public void Setup() {
 		_meter = new Meter("Benchmark.Concurrent");
+		_listener = RecordBenchmarks.Listen(_meter);
 		_otelSummary = _meter.CreateSummary("bench.concurrent", "ms", configure:
 			o => o.WithQuantiles(0.50, 0.95, 0.99));
 
@@ -171,7 +190,10 @@ public class ConcurrentRecordBenchmarks {
 	}
 
 	[GlobalCleanup]
-	public void Cleanup() => _meter.Dispose();
+	public void Cleanup() {
+		_listener.Dispose();
+		_meter.Dispose();
+	}
 
 	[Benchmark(Baseline = true)]
 	public void Summary_ConcurrentRecord() {

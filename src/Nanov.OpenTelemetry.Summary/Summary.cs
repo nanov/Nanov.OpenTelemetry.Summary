@@ -1,175 +1,188 @@
 namespace Nanov.OpenTelemetry.Summary;
 
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using Internal;
-using Reservoir;
 
-public sealed class Summary : IBufferConsumer<RecordEntry> {
-	private readonly SwapBuffer<RecordEntry, Summary> _buffer;
-	private readonly Dictionary<TagList, SummaryChild> _children = new(TagListComparer.Instance);
+public sealed class Summary {
 	private readonly SummaryOptions _options;
-	private readonly SummaryChild _untaggedChild;
 	private readonly ObservableGauge<double> _quantileGauge;
+	private readonly SummaryChild _untaggedChild;
 
-	private readonly Dictionary<TagList, (SnapshotResult Snapshot, TagList Tags)> _lastSnapshots = new(TagListComparer.Instance);
-	private SnapshotResult _lastUntaggedSnapshot;
-	private bool _hasUntaggedSnapshot;
-	private readonly List<Measurement<double>> _measurements = [];
-	private readonly List<Measurement<long>> _countMeasurements = [];
+	// Lookups are lock-free: the alternate lookup hashes the caller's tags in place. Only a new tag set takes
+	// _insertLock, once.
+	private readonly ConcurrentDictionary<KeyValuePair<string, object?>[], SummaryChild> _children = new(TagSetComparer.Instance);
+	private readonly ConcurrentDictionary<KeyValuePair<string, object?>[], SummaryChild>.AlternateLookup<ReadOnlySpan<KeyValuePair<string, object?>>> _lookup;
+	private readonly Lock _insertLock = new();
+
+	// Shared by the callbacks: they run one at a time, and each list is consumed before the next callback.
+	private readonly List<Measurement<double>> _doubles = [];
+	private readonly List<Measurement<long>> _longs = [];
 
 	internal Summary(Meter meter, string name, string? unit, string? description, SummaryOptions options) {
 		_options = options;
-		_untaggedChild = new SummaryChild(options);
-		_buffer = new SwapBuffer<RecordEntry, Summary>(options.BufferCapacity, 0.75, this);
+		_lookup = _children.GetAlternateLookup<ReadOnlySpan<KeyValuePair<string, object?>>>();
 
-		_quantileGauge = meter.CreateObservableGauge(name, () => CollectQuantiles(), unit, description);
+		// Registration order is callback order: the quantile gauge closes the window first, so max, min, count,
+		// sum and dropped report from the same one.
+		_quantileGauge = meter.CreateObservableGauge(name, CollectQuantiles, unit, description);
+		_untaggedChild = new SummaryChild(options, _quantileGauge, default);
 
 		if (options.ReportMax)
-			meter.CreateObservableGauge($"{name}.max", () => CollectMax(), unit);
+			meter.CreateObservableGauge(name + ".max", () => CollectTotals(_doubles, static c => c.Last.Count > 0, static c => c.Last.Max), unit);
+
+		if (options.ReportMin)
+			meter.CreateObservableGauge(name + ".min", () => CollectTotals(_doubles, static c => c.Last.Count > 0, static c => c.Last.Min), unit);
 
 		if (options.ReportCount)
-			meter.CreateObservableCounter($"{name}.count", () => CollectCount());
+			meter.CreateObservableCounter(name + ".count", () => CollectTotals(_longs, static c => c.TotalCount > 0, static c => c.TotalCount));
 
 		if (options.ReportSum)
-			meter.CreateObservableCounter($"{name}.sum", () => CollectSum(), unit);
+			meter.CreateObservableCounter(name + ".sum", () => CollectTotals(_doubles, static c => c.TotalCount > 0, static c => c.TotalSum), unit);
+
+		meter.CreateObservableCounter(name + ".dropped", () => CollectTotals(_longs, static c => c.TotalDropped > 0, static c => c.TotalDropped), description: "Values recorded but left out of the quantiles' sample");
 	}
 
 	public bool IsEnabled => _quantileGauge.Enabled;
 
-	public void Record(double value) {
-		if (!_quantileGauge.Enabled) return;
-		_buffer.Write(new RecordEntry(value, default));
-	}
+	public void Record(double value)
+		=> _untaggedChild.Record(value);
 
 	public void Record(double value, in TagList tags) {
 		if (!_quantileGauge.Enabled) return;
-		_buffer.Write(new RecordEntry(value, tags));
+		GetOrCreateChild(in tags).Record(value);
 	}
 
-	public void Record(double value, params ReadOnlySpan<KeyValuePair<string, object?>> tags)
-		=> Record(value, new TagList(tags));
-
-	public SummaryTimer Time() => new(this, default);
-	public SummaryTimer Time(in TagList tags) => new(this, tags);
-	public SummaryTimer Duration() => new(this, default);
-	public SummaryTimer Duration(in TagList tags) => new(this, tags);
-
-	void IBufferConsumer<RecordEntry>.Consume(ReadOnlySpan<RecordEntry> entries) {
-		foreach (ref readonly var entry in entries) {
-			var child = GetOrCreateChild(entry.Tags);
-			child.Record(entry.Value);
-		}
+	public void Record(double value, params ReadOnlySpan<KeyValuePair<string, object?>> tags) {
+		if (!_quantileGauge.Enabled) return;
+		GetOrCreateChild(tags).Record(value);
 	}
 
+	/// <summary>
+	/// A handle for one tag set, which records without looking the tags up: bind once, record many times.
+	/// </summary>
+	public SummaryHandle Bind(in TagList tags)
+		=> new(this, GetOrCreateChild(in tags));
+
+	/// <inheritdoc cref="Bind(in TagList)"/>
+	public SummaryHandle Bind(params ReadOnlySpan<KeyValuePair<string, object?>> tags)
+		=> new(this, GetOrCreateChild(tags));
+
+	public SummaryTimer Time() => new(this, _untaggedChild);
+
+	// Resolved at start, like a bound handle; skipped while disabled so an unobserved summary creates no series.
+	public SummaryTimer Time(in TagList tags)
+		=> new(this, _quantileGauge.Enabled ? GetOrCreateChild(in tags) : null);
+
+	public SummaryTimer Duration() => Time();
+	public SummaryTimer Duration(in TagList tags) => Time(in tags);
+
+	// TagList exposes its tags only by copying them out. Up to 8 (TagList's own inline size) go to a stack buffer;
+	// more go to a pooled array. Public API only: TagList's internals differ between DiagnosticSource versions.
 	private SummaryChild GetOrCreateChild(in TagList tags) {
-		if (tags.Count == 0)
+		var count = tags.Count;
+		if (count == 0)
 			return _untaggedChild;
+		if (count > TagBuffer.Length)
+			return GetOrCreateChildPooled(in tags);
 
-		if (!_children.TryGetValue(tags, out var child)) {
-			child = new SummaryChild(_options, tags);
-			_children[tags] = child;
-		}
-		return child;
+		var buffer = new TagBuffer();
+		Span<KeyValuePair<string, object?>> span = buffer;
+		span = span[..count];
+		tags.CopyTo(span);
+		return GetOrCreateChild(span);
 	}
 
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	private SummaryChild GetOrCreateChildPooled(in TagList tags) {
+		var array = ArrayPool<KeyValuePair<string, object?>>.Shared.Rent(tags.Count);
+		try {
+			var span = array.AsSpan(0, tags.Count);
+			tags.CopyTo(span);
+			return GetOrCreateChild(span);
+		}
+		finally {
+			ArrayPool<KeyValuePair<string, object?>>.Shared.Return(array, clearArray: true);
+		}
+	}
+
+	[InlineArray(Length)]
+	private struct TagBuffer {
+		public const int Length = 8;
+		private KeyValuePair<string, object?> _element;
+	}
+
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	private SummaryChild GetOrCreateChild(ReadOnlySpan<KeyValuePair<string, object?>> tags) {
+		if (tags.IsEmpty)
+			return _untaggedChild;
+		return _lookup.TryGetValue(tags, out var child) ? child : AddChild(tags);
+	}
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	private SummaryChild AddChild(ReadOnlySpan<KeyValuePair<string, object?>> tags) {
+		lock (_insertLock) {
+			if (_lookup.TryGetValue(tags, out var existing))
+				return existing;
+
+			var child = new SummaryChild(_options, _quantileGauge, tags);
+			_children.TryAdd(child.BaseTags, child);
+			return child;
+		}
+	}
 
 	private List<Measurement<double>> CollectQuantiles() {
-		_buffer.DrainForSnapshot();
-
 		var quantiles = _options.Quantiles;
-		_measurements.Clear();
+		var measurements = _doubles;
+		measurements.Clear();
 
-		Span<double> qv = stackalloc double[quantiles.Length];
-
-		var untagged = _untaggedChild.SnapshotAndReset(quantiles, qv);
-		_lastUntaggedSnapshot = untagged;
-		_hasUntaggedSnapshot = untagged.Count > 0;
-		_untaggedChild.CumulativeCount += untagged.Count;
-		_untaggedChild.CumulativeSum += untagged.Sum;
-
-		if (_hasUntaggedSnapshot)
-			for (var i = 0; i < quantiles.Length; i++)
-				_measurements.Add(CreateMeasurement(qv[i], _untaggedChild.QuantileTagArrays[i]));
-
-		foreach (var (key, child) in _children) {
-			var snapshot = child.SnapshotAndReset(quantiles, qv);
-			if (snapshot.Count == 0) continue;
-
-			child.CumulativeCount += snapshot.Count;
-			child.CumulativeSum += snapshot.Sum;
-
-			ref var snapshotEntry = ref CollectionsMarshal.GetValueRefOrAddDefault(_lastSnapshots, key, out _);
-			snapshotEntry = (snapshot, key);
-
-			for (var i = 0; i < quantiles.Length; i++)
-				_measurements.Add(CreateMeasurement(qv[i], child.QuantileTagArrays[i]));
-		}
-
-		return _measurements;
-	}
-
-	private List<Measurement<double>> CollectMax() {
-		_measurements.Clear();
-
-		if (_hasUntaggedSnapshot)
-			_measurements.Add(new Measurement<double>(_lastUntaggedSnapshot.Max));
-
-		foreach (var (key, child) in _children) {
-			ref var entry = ref CollectionsMarshal.GetValueRefOrNullRef(_lastSnapshots, key);
-			if (!Unsafe.IsNullRef(ref entry))
-				_measurements.Add(CreateMeasurement(entry.Snapshot.Max, child.BaseTags));
-		}
-
-		return _measurements;
-	}
-
-	// Cumulative, per-child tagged totals (a child only ever grows), mirroring sum/max so the counter
-	// can be grouped and filtered by the recorded tags (e.g. http_route, status). Children with no
-	// recorded value are skipped; the untagged child emits a tagless series.
-	private List<Measurement<long>> CollectCount() {
-		_countMeasurements.Clear();
-
-		if (_untaggedChild.CumulativeCount > 0)
-			_countMeasurements.Add(new Measurement<long>(_untaggedChild.CumulativeCount));
-
+		Add(_untaggedChild);
 		foreach (var (_, child) in _children)
-			if (child.CumulativeCount > 0)
-				_countMeasurements.Add(CreateCountMeasurement(child.CumulativeCount, child.BaseTags));
+			Add(child);
+		return measurements;
 
-		return _countMeasurements;
+		void Add(SummaryChild child) {
+			lock (child.SyncRoot) {
+				if (!child.Collect(quantiles))
+					return;
+				for (var i = 0; i < quantiles.Length; i++)
+					measurements.Add(CreateMeasurement(child.QuantileValues[i], child.QuantileTagArrays[i]));
+			}
+		}
 	}
 
-	private List<Measurement<double>> CollectSum() {
-		_measurements.Clear();
+	// .max, .min, .count, .sum and .dropped: one point per child that has one, with the child's own tags, so the
+	// counters can be grouped and filtered by the recorded tags (e.g. http_route, status). Count, sum and dropped
+	// are cumulative; max and min cover the window the quantile gauge just closed.
+	private List<Measurement<T>> CollectTotals<T>(List<Measurement<T>> measurements, Func<SummaryChild, bool> include, Func<SummaryChild, T> value)
+		where T : struct {
+		measurements.Clear();
 
-		if (_untaggedChild.CumulativeCount > 0)
-			_measurements.Add(new Measurement<double>(_untaggedChild.CumulativeSum));
-
+		Add(_untaggedChild);
 		foreach (var (_, child) in _children)
-			if (child.CumulativeCount > 0)
-				_measurements.Add(CreateMeasurement(child.CumulativeSum, child.BaseTags));
+			Add(child);
+		return measurements;
 
-		return _measurements;
+		void Add(SummaryChild child) {
+			lock (child.SyncRoot)
+				if (include(child))
+					measurements.Add(CreateMeasurement(value(child), child.BaseTags));
+		}
 	}
 
-	private static Measurement<double> CreateMeasurement(double value, KeyValuePair<string, object?>[] tags) {
-		var m = new Measurement<double>(value);
-		MeasurementTagsRef(ref m) = tags;
+	// The public constructors copy the tags into a new array on every export; the children's arrays are built
+	// once and never change, so they are handed over as they are.
+	private static Measurement<T> CreateMeasurement<T>(T value, KeyValuePair<string, object?>[] tags) where T : struct {
+		var m = new Measurement<T>(value);
+		MeasurementAccessor<T>.Tags(ref m) = tags;
 		return m;
 	}
 
-	private static Measurement<long> CreateCountMeasurement(long value, KeyValuePair<string, object?>[] tags) {
-		var m = new Measurement<long>(value);
-		MeasurementCountTagsRef(ref m) = tags;
-		return m;
+	private static class MeasurementAccessor<T> where T : struct {
+		[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_tags")]
+		public static extern ref KeyValuePair<string, object?>[] Tags(ref Measurement<T> measurement);
 	}
-
-	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_tags")]
-	private static extern ref KeyValuePair<string, object?>[] MeasurementTagsRef(ref Measurement<double> measurement);
-
-	[UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_tags")]
-	private static extern ref KeyValuePair<string, object?>[] MeasurementCountTagsRef(ref Measurement<long> measurement);
 }

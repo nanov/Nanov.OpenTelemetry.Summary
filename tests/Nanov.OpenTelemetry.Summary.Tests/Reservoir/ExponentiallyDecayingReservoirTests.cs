@@ -102,3 +102,84 @@ public class ExponentiallyDecayingReservoirTests {
 		Assert.Equal(200, s2.Sum);
 	}
 }
+
+public class ExponentiallyDecayingReservoirSamplingTests {
+	private static long Now => Environment.TickCount64 / 1000;
+
+	[Fact]
+	public void ExactWhileUnderTheSampleSize() {
+		var r = new ExponentiallyDecayingReservoir();
+		for (var v = 1; v <= 100; v++)
+			r.Record(v, Now);
+
+		Span<double> qv = stackalloc double[4];
+		var s = r.SnapshotAndReset([0.5, 0.95, 0.99, 1.0], qv);
+
+		Assert.Equal([50.0, 95.0, 99.0, 100.0], qv.ToArray());
+		Assert.Equal(100, s.Count);
+		Assert.Equal(5050.0, s.Sum);
+		Assert.Equal(1.0, s.Min);
+		Assert.Equal(100.0, s.Max);
+	}
+
+	[Fact]
+	public void TheSampleGrowsWithItsValues_UpToItsSize() {
+		var r = new ExponentiallyDecayingReservoir();
+		Assert.Equal(0, r.Capacity);
+
+		r.Record(1.0, Now);
+		Assert.True(r.Capacity < 1028);
+
+		for (var v = 0; v < 10_000; v++)
+			r.Record(v, Now);
+		Assert.Equal(1028, r.SampledCount);
+		Assert.Equal(1028, r.Capacity);
+	}
+
+	[Fact]
+	public void MaxAndMin_CoverEvictedValues() {
+		var r = new ExponentiallyDecayingReservoir(sampleSize: 4);
+		r.Record(-1_000, Now);
+		for (var v = 0; v < 10_000; v++)
+			r.Record(v % 10, Now);
+		r.Record(1_000_000, Now);
+		for (var v = 0; v < 10_000; v++)
+			r.Record(v % 10, Now);
+
+		Span<double> qv = stackalloc double[1];
+		var s = r.SnapshotAndReset([0.5], qv);
+
+		Assert.Equal(1_000_000, s.Max);
+		Assert.Equal(-1_000, s.Min);
+		Assert.Equal(20_002, s.Count);
+	}
+
+	[Fact]
+	public void RecentValuesWeighMore() {
+		var r = new ExponentiallyDecayingReservoir(sampleSize: 100, alpha: 0.5);
+		var start = Environment.TickCount64 / 1000;
+		for (var i = 0; i < 1000; i++)
+			r.Record(1.0, start);
+		for (var i = 0; i < 1000; i++)
+			r.Record(1000.0, start + 60);
+
+		Span<double> qv = stackalloc double[1];
+		r.SnapshotAndReset([0.05], qv);
+
+		Assert.Equal(1000.0, qv[0]);
+	}
+
+	[Fact]
+	public void RescalingKeepsTheOrder() {
+		var r = new ExponentiallyDecayingReservoir(sampleSize: 10, rescaleInterval: TimeSpan.FromSeconds(10));
+		var start = Environment.TickCount64 / 1000;
+		r.Record(1.0, start);
+		r.Record(2.0, start + 3_600);
+
+		Span<double> qv = stackalloc double[1];
+		var s = r.SnapshotAndReset([1.0], qv);
+
+		Assert.Equal(2.0, qv[0]);
+		Assert.Equal(2, s.Count);
+	}
+}
